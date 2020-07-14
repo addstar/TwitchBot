@@ -2,14 +2,26 @@ import websockets
 import asyncio
 import json
 import random
+import traceback
 from pprint import pprint
 from mcrcon import MCRcon
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Read channel/token from config file
 config = json.load(open('configs/pubsub.json'))
 _channel_id = config['channel_id']
 _auth_token = config['auth_token']
+
+# Set this to the version of minecraft in use
+# This adjusts the commands used for redemptions
+_mcver = config['mcver']
+
+# List of current game modes for rewards (minecraft, chancecubes, etc)
+_mcmodes = config['mcmodes']
+
+# Rcon stuff
+_rconPass = config['rconpass']
+_rconPort = config['rconport']
 
 event_loop = asyncio.new_event_loop()
 
@@ -59,17 +71,22 @@ async def pubsubConnect():
                 #logmsg(create_debug_message('PubSub Connected'))
                 logmsg('PubSub Connected')
 
+                # When the last ping was sent
+                last_ping = datetime.now()
+                next_ping = timedelta(minutes=4, seconds=30)
+
                 while not websocket.closed:
                     # As per documentation, send ping requests within 5 minutes
-                    rand_timeout = random.randint(240, 300)
+                    ping_delay = next_ping - (datetime.now() - last_ping)
                     try:
-                        response_raw = await asyncio.wait_for(websocket.recv(), timeout=rand_timeout)
-                        #logmsg("Response: " + response_raw)
+                        response_raw = await asyncio.wait_for(websocket.recv(), timeout=ping_delay.seconds)
                     except asyncio.TimeoutError:
                         # If timeout, ping server
                         await websocket.send('{"type": "PING"}')
                         try:
-                            await asyncio.wait_for(websocket.recv(), timeout=10)
+                            await asyncio.wait_for(websocket.recv(), timeout=5)
+                            # Update last ping time
+                            last_ping = datetime.now()
                         except asyncio.TimeoutError:
                             break # If no response from server, reconnection is needed
                         continue # If we get a response, ping was successful, return to listening
@@ -100,6 +117,7 @@ async def pubsubConnect():
                                 logmsg(f'UNHANDLED MESSAGE: {response_raw}')
                         except Exception as ex:
                             logmsg(f'Unexpected error handling message: {ex}')
+                            traceback.print_stack()
                             continue
 
                     elif response['type'] == "RECONNECT":
@@ -117,14 +135,15 @@ async def pubsubConnect():
 
 def handleBitsMessage(message):
     # Do bits message
-    logmsg("RAWBIT: " + json.dumps(message))
-    if message['context'] == 'cheer':
+    #logmsg("RAWBIT: " + json.dumps(message))
+    if message['data']['context'] == 'cheer':
+        cheer = message['data']
         msg = {
             'bits': {
-                'bits_used': message['bits_used'],
-                'chat_message': message['chat_message'],
-                'user_name': message['user_name'],
-                'timestamp': message['time']
+                'bits_used': cheer['bits_used'],
+                'chat_message': cheer['chat_message'],
+                'user_name': cheer['user_name'],
+                'timestamp': cheer['time']
             }
         }
         if msg['bits']['user_name'] == None:
@@ -132,32 +151,125 @@ def handleBitsMessage(message):
 
         logmsg(json.dumps(msg))
 
+        # Do the chance cube thing if necessary
+        if 'chancecubes' in _mcmodes:
+            bits  = msg['bits']['bits_used']
+            cost  = 50
+            cubes = int(bits/cost)
+            rwho  = msg['bits']['user_name']
+
+            # Increase hostile chance with more bits
+            # Rules:
+            #   <100 bits does not increase chance
+            #   100+ bits increases chance per 30
+            #
+            minbits       = 100
+            bitsperlevel  = 30
+            hostilechance = 1 if bits < minbits else 1 + int(round(((bits-minbits) / bitsperlevel)))
+            passivechance = 1
+
+            mobs = (
+                ['quark:frog']                      * passivechance +
+                ['quark:crab']                      * passivechance +
+                ['twilightforest:bighorn_sheep']    * passivechance +
+                ['twilightforest:deer']             * passivechance +
+                ['twilightforest:harbinger_cube']   * passivechance +
+                ['twilightforest:penguin']          * passivechance +
+                ['twilightforest:quest_ram']        * passivechance +
+                ['twilightforest:raven']            * passivechance +
+                ['twilightforest:roving_cube']      * passivechance +
+                ['twilightforest:squirrel']         * passivechance +
+                ['twilightforest:tiny_bird']        * passivechance +
+                ['twilightforest:wild_boar']        * passivechance +
+                ['twilightforest:helmet_crab']      * hostilechance +
+                ['twilightforest:minoshroom']       * hostilechance +
+                ['twilightforest:rising_zombie']    * hostilechance
+            )
+            mob = random.choice(mobs)
+
+            # Pick a random colour for the mob name
+            namecolours = 'abcde96'
+            ncolour = random.choice(namecolours)
+
+            # Destroy item in hand
+            if cubes > 0:
+                logmsg(f'Bit reward: {cubes}x Chance cubes (by {rwho})')
+                cmds = [
+                    mcTitle(f'{cubes}x Chance Cubes!!!', f'Given by {rwho}', 'blue', 'red'),
+                    mcCmd(f'/give ArtfulMelody chancecubes:chance_cube {cubes}'),
+                    mcEffect('minecraft:nausea', 5, 1),
+                    mcEffect('tombstone:ghostly_shape', 5, 1),
+                    mcSummon(mob, 1, '§'+ncolour+rwho),
+                ]
+                sendRconCommands(cmds)
+
 def handleSubMessage(message):
     # So sub message
     logmsg("RAWSUB: " + json.dumps(message))
     msg = {
-        'subscription': {
+        'sub': {
             'user_name': '',
             'timestamp': message['time'],
             'sub_plan': message['sub_plan'],
-            'cumulative_months': message['cumulative-months'],
-            'streak_months': message['streak-months'],
+            'months': message['months'],
             'context': message['context'],
             'message': message['sub_message']['message'],
             'from_user': ''
         }
     }
 
-    if message['context'] == 'anonsubgift':
-        msg['subscription']['user_name'] = message['recipient_display_name']
-        msg['subscription']['from_user'] = 'Anonymous Gifter'
-    elif response_data['context'] == 'subgift':
-        msg['subscription']['user_name'] = message['recipient_display_name']
-        msg['subscription']['from_user'] = message['display_name']
+    sub = msg['sub']
+    if sub['context'] == 'anonsubgift':
+        sub['user_name'] = message['recipient_display_name']
+        sub['from_user'] = 'Anonymous Gifter'
+        rwho = sub['from_user']
+    elif sub['context'] == 'subgift':
+        sub['user_name'] = message['recipient_display_name']
+        sub['from_user'] = message['display_name']
+        rwho = sub['from_user']
     else:
-        msg['subscription']['user_name'] = response_data['display_name']
+        sub['user_name'] = message['display_name']
+        rwho = sub['user_name']
 
     logmsg(json.dumps(msg))
+
+    # Do the chance cube thing if necessary
+    if 'chancecubes' in _mcmodes:
+        logmsg(f'Sub reward: Giant chance cube (by {rwho})')
+
+        hostilechance = 1
+        passivechance = 2
+        mobs = (
+            ['quark:frog']                      * passivechance +
+            ['quark:crab']                      * passivechance +
+            ['twilightforest:bighorn_sheep']    * passivechance +
+            ['twilightforest:deer']             * passivechance +
+            ['twilightforest:harbinger_cube']   * passivechance +
+            ['twilightforest:penguin']          * passivechance +
+            ['twilightforest:quest_ram']        * passivechance +
+            ['twilightforest:raven']            * passivechance +
+            ['twilightforest:roving_cube']      * passivechance +
+            ['twilightforest:squirrel']         * passivechance +
+            ['twilightforest:tiny_bird']        * passivechance +
+            ['twilightforest:wild_boar']        * passivechance +
+            ['twilightforest:helmet_crab']      * hostilechance +
+            ['twilightforest:minoshroom']       * hostilechance +
+            ['twilightforest:rising_zombie']    * hostilechance
+        )
+        mob = random.choice(mobs)
+
+        # Pick a random colour for the mob name
+        namecolours = 'abcde96'
+        ncolour = random.choice(namecolours)
+
+        cmds = [
+            mcTitle(f'Giant Chance Cube!', f'Thanks to {rwho}', 'green', 'red'),
+            mcCmd(f'/give ArtfulMelody chancecubes:compact_giant_chance_cube 1'),
+            mcEffect('minecraft:nausea', 5, 1),
+            mcEffect('tombstone:ghostly_shape', 5, 1),
+            mcSummon(mob, 1, '§'+ncolour+rwho),
+        ]
+        sendRconCommands(cmds)
 
 def handlePointsMessage(data):
     message = data['data']
@@ -185,62 +297,141 @@ def handlePointsMessage(data):
     if rtype.startswith('Drop/Destroy it'):
         # Destroy item in hand
         logmsg(f'Reward: Destroy item (by {rwho})')
-        cmds = generateTitle('Item Destroyed!!', f'Requested by {rwho}', 'red', 'yellow')
-        cmds.extend([ 
-            '/replaceitem entity ArtfulMelody weapon.mainhand minecraft:air',
-            '/effect give ArtfulMelody minecraft:nausea 5 1',
-        ])
+        cmds = [
+            mcTitle('Item Destroyed!!', f'Requested by {rwho}', 'red', 'yellow'),
+            mcCmd('/replaceitem entity ArtfulMelody weapon.mainhand minecraft:air'),
+            mcEffect('minecraft:nausea', 5, 1),
+        ]
         sendRconCommands(cmds)
     elif rtype.startswith('Pumpkin'):
         # Give pumpkin mask (remove current headwear first)
         logmsg(f'Reward: WIP - Pumpkin mask (by {rwho})')
-        cmds = generateTitle('Pumpkin Mask Time!', f'Requested by {rwho}', 'gold', 'yellow')
-        cmds.extend([ '/effect give ArtfulMelody minecraft:nausea 5 1' ])
+        cmds = [
+            mcTitle('Pumpkin Mask Time!', f'Requested by {rwho}', 'gold', 'yellow'),
+            mcEffect('minecraft:nausea', 5, 1),
+            mcGive('minecraft:carved_pumpkin', 1),
+            mcEffect('minecraft:nausea', 5, 1),
+        ]
         sendRconCommands(cmds)
     elif rtype.startswith('Sticky Feet'):
         # Give very high slowness effect
         logmsg(f'Reward: Sticky feet (by {rwho})')
-        cmds = generateTitle('You have Sticky Feet!', f'Requested by {rwho}', 'dark_purple', 'yellow')
-        cmds.extend([ 
-            '/effect give ArtfulMelody minecraft:slowness 30 20',
-            '/effect give ArtfulMelody minecraft:nausea 5 1',
-        ])
+        cmds = [
+            mcTitle('You have Sticky Feet!', f'Requested by {rwho}', 'dark_purple', 'yellow'),
+            mcEffect('minecraft:slowness', 30, 20),
+            mcEffect('minecraft:nausea', 5, 1),
+            mcEffect('minecraft:nausea', 5, 1),
+        ]
         sendRconCommands(cmds)
     elif rtype.startswith('Healing Save'):
         # Give Regen + Fire Resistance
         logmsg(f'Reward: Healing save (by {rwho})')
-        cmds = generateTitle('Healing Save!!', f'Requested by {rwho}', 'green', 'yellow')
-        cmds.extend([ 
-            '/effect give ArtfulMelody minecraft:regeneration 30 1',
-            '/effect give ArtfulMelody minecraft:fire_resistance 30 1',
-        ])
+        cmds = [
+            mcTitle('Healing Save!!', f'Requested by {rwho}', 'green', 'yellow'),
+            mcEffect('minecraft:regeneration', 30, 1),
+            mcEffect('minecraft:fire_resistance', 30, 1),
+        ]
         sendRconCommands(cmds)
     elif rtype.startswith('No sleep tonight'):
         # No sleep
         logmsg(f'Reward: No sleep tonight (by {rwho})')
-        cmds = generateTitle('No Sleep!', f'Requested by {rwho}', 'red', 'yellow')
-        cmds.extend([ '/effect give ArtfulMelody minecraft:nausea 5 1' ])
+        cmds = [
+            mcTitle('No Sleep!', f'Requested by {rwho}', 'red', 'yellow'),
+            mcEffect('minecraft:nausea', 5, 1),
+        ]
+        sendRconCommands(cmds)
+    elif rtype.startswith('BOOO'):
+        # Scary in game message/sound
+        logmsg(f'Reward: BOOOO (by {rwho})')
+        sounds = [
+            'minecraft:entity.ghast.hurt',
+            'minecraft:entity.ghast.scream',
+            'minecraft:entity.horse.death',
+            'minecraft:entity.wolf.howl',
+            'minecraft:entity.elder_guardian.curse',
+            'minecraft:entity.bat.takeoff',
+            'minecraft:entity.lightning.thunder'
+            'minecraft:entity.llama.death',
+            'minecraft:ambient.cave',
+            'minecraft:entity.donkey.death',
+        ]
+        sound1 = random.choice(sounds)
+        sound2 = random.choice(sounds)
+        cmds = [
+            mcTitle('BOOOOOOOOOOOO!!!!', f'Requested by {rwho}', 'red', 'gray', 5, 80, 20),
+            mcEffect('minecraft:blindness', 2, 1),
+            mcSound(sound1),
+            mcParticle('explosion_emitter', 7, 2),
+            mcEffect('minecraft:nausea', 5, 1),
+            mcSound(sound2),
+        ]
         sendRconCommands(cmds)
     else:
         logmsg(f'Unknown reward: {rtype}')
         logmsg('Full request: ' + json.dumps(msg))
 
-def sendRconCommands(commands):
-    mcr = MCRcon("127.0.0.1", "artful", 45578, 0)
+def sendRconCommands(cmds):
+    mcr = MCRcon("127.0.0.1", _rconPass, _rconPort, 0)
     mcr.connect()
-    for cmd in commands:
+
+    # flatten all commands
+    cmds = [item for sublist in cmds for item in sublist]
+
+    for cmd in cmds:
+        # Adjust commands for 1.12 if necessary
         resp = mcr.command(cmd)
         logmsg(f'RCON Command: {cmd}: {resp}')
 
     mcr.disconnect()
 
-def generateTitle(title, sub, tcolour, scolour):
+def mcTitle(title, sub, tcolour, scolour, fadein = 20, delay = 100, fadeout = 40):
     cmds = [
-        '/title ArtfulMelody times 20 100 40',
-        f'/title ArtfulMelody subtitle {{"text":"{sub}","color":"scolour"}}',
+        f'/title ArtfulMelody times {fadein} {delay} {fadeout}',
+        f'/title ArtfulMelody subtitle {{"text":"{sub}","color":"{scolour}"}}',
         f'/title ArtfulMelody title {{"text":"{title}","color":"{tcolour}"}}',
     ]
     return cmds
+
+def mcSound(sound, player = 'ArtfulMelody'):
+    if _mcver == '1.12':
+        cmd = f'/execute {player} ~ ~ ~ /playsound {sound} master @s ~ ~ ~ 1'
+    else:
+        cmd = f'execute as {player} at {player} run playsound {sound} master @s'
+
+    return [ cmd ]
+
+def mcEffect(effect, time, power, player = 'ArtfulMelody'):
+    if _mcver == '1.12':
+        cmd = f'/effect {player} {effect} {time} {power}'
+    else:
+        cmd = f'/effect give {player} {effect} {time} {power}'
+
+    return [ cmd ]
+
+def mcParticle(particle, speed, count, player = 'ArtfulMelody'):
+    if _mcver == '1.12':
+        particle = particle.replace('explosion_emitter', 'hugeexplosion')
+        cmd = f'/execute {player} ~ ~ ~ /particle {particle} ~ ~1 ~ 0 0 0 {speed} {count} force @s'
+    else:
+        cmd = f'execute at {player} run particle {particle} ~ ~1 ~ 0 0 0 {speed} {count} force'
+
+    return [ cmd ]
+
+def mcGive(item, count, player = 'ArtfulMelody'):
+    return [ f'/give {player} {item} {count}' ]
+
+def mcSummon(entity, count, ename, player = 'ArtfulMelody'):
+    if _mcver == '1.12':
+        cmd = f'execute {player} ~ ~ ~ /summon {entity} ~ ~1 ~ {{CustomName:"{ename}",CustomNameVisible:1,PersistenceRequired:1}}'
+    else:
+        cmd = f'execute at {player} run summon {entity} ~ ~1 ~ {{CustomName:"\"{ename}\"",CustomNameVisible:1,PersistenceRequired:1}}'
+
+    return [ cmd ]
+
+def mcCmd(cmd):
+    if _mcver == '1.12':
+        cmd = cmd.replace(' weapon.mainhand ', ' slot.weapon.mainhand ')
+    return [ cmd ]
 
 def startWebSocketServer():
     logmsg("Starting server...")
