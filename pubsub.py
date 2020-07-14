@@ -173,16 +173,16 @@ def handleBitsMessage(message):
                 ['quark:crab']                      * passivechance +
                 ['twilightforest:bighorn_sheep']    * passivechance +
                 ['twilightforest:deer']             * passivechance +
-                ['twilightforest:harbinger_cube']   * passivechance +
                 ['twilightforest:penguin']          * passivechance +
                 ['twilightforest:quest_ram']        * passivechance +
                 ['twilightforest:raven']            * passivechance +
-                ['twilightforest:roving_cube']      * passivechance +
                 ['twilightforest:squirrel']         * passivechance +
+                ['twilightforest:bunny']            * passivechance +
                 ['twilightforest:tiny_bird']        * passivechance +
                 ['twilightforest:wild_boar']        * passivechance +
                 ['twilightforest:helmet_crab']      * hostilechance +
                 ['twilightforest:minoshroom']       * hostilechance +
+                ['twilightforest:yeti']             * hostilechance +
                 ['twilightforest:rising_zombie']    * hostilechance
             )
             mob = random.choice(mobs)
@@ -197,6 +197,15 @@ def handleBitsMessage(message):
                 cmds = [
                     mcTitle(f'{cubes}x Chance Cubes!!!', f'Given by {rwho}', 'blue', 'red'),
                     mcCmd(f'/give ArtfulMelody chancecubes:chance_cube {cubes}'),
+                    mcEffect('minecraft:nausea', 5, 1),
+                    mcEffect('tombstone:ghostly_shape', 5, 1),
+                    mcSummon(mob, 1, '§'+ncolour+rwho),
+                ]
+                sendRconCommands(cmds)
+            elif bits >= 20 and mob:
+                logmsg(f'Bit reward: Spawning {mob} (by {rwho})')
+                cmds = [
+                    mcTitle(f'New buddy!', f'Given by {rwho}', 'yellow', 'red'),
                     mcEffect('minecraft:nausea', 5, 1),
                     mcEffect('tombstone:ghostly_shape', 5, 1),
                     mcSummon(mob, 1, '§'+ncolour+rwho),
@@ -244,16 +253,16 @@ def handleSubMessage(message):
             ['quark:crab']                      * passivechance +
             ['twilightforest:bighorn_sheep']    * passivechance +
             ['twilightforest:deer']             * passivechance +
-            ['twilightforest:harbinger_cube']   * passivechance +
             ['twilightforest:penguin']          * passivechance +
             ['twilightforest:quest_ram']        * passivechance +
             ['twilightforest:raven']            * passivechance +
-            ['twilightforest:roving_cube']      * passivechance +
             ['twilightforest:squirrel']         * passivechance +
+            ['twilightforest:bunny']            * passivechance +
             ['twilightforest:tiny_bird']        * passivechance +
             ['twilightforest:wild_boar']        * passivechance +
             ['twilightforest:helmet_crab']      * hostilechance +
             ['twilightforest:minoshroom']       * hostilechance +
+            ['twilightforest:yeti']             * hostilechance +
             ['twilightforest:rising_zombie']    * hostilechance
         )
         mob = random.choice(mobs)
@@ -327,7 +336,7 @@ def handlePointsMessage(data):
         # Give Regen + Fire Resistance
         logmsg(f'Reward: Healing save (by {rwho})')
         cmds = [
-            mcTitle('Healing Save!!', f'Requested by {rwho}', 'green', 'yellow'),
+            mcTitle('Healing Save!!', f'Given by {rwho}', 'green', 'yellow'),
             mcEffect('minecraft:regeneration', 30, 1),
             mcEffect('minecraft:fire_resistance', 30, 1),
         ]
@@ -338,6 +347,16 @@ def handlePointsMessage(data):
         cmds = [
             mcTitle('No Sleep!', f'Requested by {rwho}', 'red', 'yellow'),
             mcEffect('minecraft:nausea', 5, 1),
+        ]
+        sendRconCommands(cmds)
+    elif rtype.startswith('Free lunch'):
+        logmsg(f'Reward: Free lunch')
+        cmds = [
+            mcTitle('Free Lunch!', f'Given by {rwho}', 'green', 'yellow'),
+            mcEffect('minecraft:nausea', 5, 1),
+            mcGive('minecraft:cooked_beef', 5),
+            mcGive('minecraft:baked_potato', 5),
+            mcGive('minecraft:pumpkin_pie', 2),
         ]
         sendRconCommands(cmds)
     elif rtype.startswith('BOOO'):
